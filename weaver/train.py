@@ -875,12 +875,12 @@ def _main(args):
                          (epoch, valid_metric, best_valid_metric), color='bold')
             # clean the old ckpt. For one model save at most 10 ckpts+best
             save_interval=args.num_epochs // 10
-            if (int(epoch)-1)>0 and (int(epoch)-1) % save_interval != 0:
+            if epoch-1>0 and (epoch-1) % save_interval != 0:
                 try:
-                    os.remove(args.model_prefix + '_epoch-%d_state.pt' % int(epoch)-1) 
-                    os.remove(args.model_prefix + '_epoch-%d_optimizer.pt' % int(epoch)-1) 
+                    os.remove(args.model_prefix + '_epoch-%d_state.pt' % (epoch-1)) 
+                    os.remove(args.model_prefix + '_epoch-%d_optimizer.pt' % (epoch-1)) 
                 finally:
-                    _logger.info('Epoch #%d: Clean previous ckpt...' % int(epoch))
+                    _logger.info('Epoch #%d: Clean previous ckpt...' % epoch)
 
     if args.data_test:
         if args.backend is not None and local_rank != 0:
