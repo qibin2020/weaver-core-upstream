@@ -873,6 +873,14 @@ def _main(args):
                     # torch.save(model, args.model_prefix + '_best_epoch_full.pt')
             _logger.info('Epoch #%d: Current validation metric: %.5f (best: %.5f)' %
                          (epoch, valid_metric, best_valid_metric), color='bold')
+            # clean the old ckpt. For one model save at most 10 ckpts+best
+            save_interval=args.num_epochs // 10
+            if (epoch-1)>0 and (epoch-1) % save_interval != 0:
+                try:
+                    os.remove(args.model_prefix + '_epoch-%d_state.pt' % epoch-1) 
+                    os.remove(args.model_prefix + '_epoch-%d_optimizer.pt' % epoch-1) 
+                finally:
+                    _logger.info('Epoch #%d: Clean previous ckpt...' % epoch)
 
     if args.data_test:
         if args.backend is not None and local_rank != 0:
