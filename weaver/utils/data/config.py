@@ -103,15 +103,18 @@ class DataConfig(object):
         # labels
         self.label_type = opts['labels']['type']
         self.label_value = opts['labels']['value']
+        self.label_count = -1
         if self.label_type == 'simple':
             assert (isinstance(self.label_value, list))
             self.label_names = ('_label_',)
             label_exprs = ['ak.to_numpy(%s)' % k for k in self.label_value]
             self.register('_label_', 'np.argmax(np.stack([%s], axis=1), axis=1)' % (','.join(label_exprs)))
             self.register('_labelcheck_', 'np.sum(np.stack([%s], axis=1), axis=1)' % (','.join(label_exprs)), 'train')
+            self.label_count=len(self.label_value)
         else:
             self.label_names = tuple(self.label_value.keys())
             self.register(self.label_value)
+            self.label_count=opts['labels']['count']
         self.basewgt_name = '_basewgt_'
         self.weight_name = None
         if opts['weights'] is not None:
