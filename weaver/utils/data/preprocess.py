@@ -109,7 +109,7 @@ class AutoStandardizer(object):
         _logger.debug('[AutoStandardizer] aux_branches:\n  %s', ','.join(aux_branches))
         _logger.debug('[AutoStandardizer] load_branches:\n  %s', ','.join(load_branches))
 
-        table = _read_files(filelist, load_branches, self.load_range, show_progressbar=True,
+        table = _read_files(filelist, load_branches, self.load_range, show_progressbar=False,
                             treename=self._data_config.treename,
                             branch_magic=self._data_config.branch_magic, file_magic=self._data_config.file_magic)
         table = _apply_selection(table, self._data_config.selection, funcs=self._data_config.var_funcs)
@@ -189,7 +189,7 @@ class WeightMaker(object):
         _logger.debug('[WeightMaker] aux_branches:\n  %s', ','.join(aux_branches))
         _logger.debug('[WeightMaker] load_branches:\n  %s', ','.join(load_branches))
 
-        table = _read_files(filelist, load_branches, show_progressbar=True,
+        table = _read_files(filelist, load_branches, show_progressbar=False,
                             treename=self._data_config.treename,
                             branch_magic=self._data_config.branch_magic, file_magic=self._data_config.file_magic)
         table = _apply_selection(table, self._data_config.selection, funcs=self._data_config.var_funcs)
