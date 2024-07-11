@@ -238,6 +238,10 @@ class DataConfig(object):
                     self.test_aux_branches.add(name)
 
     def dump(self, fp):
+        import os
+        if os.path.isfile(fp):
+            _logger.info(f"Auto-gen yaml existed! directly load... {fp}")
+            return
         with open(fp, 'w') as f:
             yaml.safe_dump(self.options, f, sort_keys=False)
 
