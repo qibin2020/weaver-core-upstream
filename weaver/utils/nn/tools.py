@@ -66,7 +66,7 @@ def train_classification(
         for X, y, _ in tq:
             inputs = [X[k].to(dev) for k in data_config.input_names]
             label = y[data_config.label_names[0]].long().to(dev)
-            entry_count += label.shape[0]
+            entry_count += inputs[0].shape[0]
             try:
                 mask = y[data_config.label_names[0] + '_mask'].bool().to(dev)
             except KeyError:
@@ -163,7 +163,7 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
                 # X, y: torch.Tensor; Z: ak.Array
                 inputs = [X[k].to(dev) for k in data_config.input_names]
                 label = y[data_config.label_names[0]].long().to(dev)
-                entry_count += label.shape[0]
+                entry_count += inputs[0].shape[0]
                 try:
                     mask = y[data_config.label_names[0] + '_mask'].bool().to(dev)
                 except KeyError:

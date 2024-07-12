@@ -16,6 +16,7 @@ def _apply_selection(table, selection, funcs=None):
         new_vars = {k: funcs[k] for k in _get_variable_names(selection) if k not in table.fields and k in funcs}
         _build_new_variables(table, new_vars)
     selected = ak.values_astype(_eval_expr(selection, table), 'bool')
+    _logger.info(f'Selected {ak.sum(selected)}/{ak.count(selected)}')
     return table[selected]
 
 
