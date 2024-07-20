@@ -54,7 +54,7 @@ def train_classification(
     model.train()
 
     data_config = train_loader.dataset.config
-    quite=extra_args.get("extra_args",False)
+    quite=extra_args.get("quite",False)
 
     label_counter = Counter()
     total_loss = 0
@@ -149,7 +149,7 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
     model.eval()
 
     data_config = test_loader.dataset.config
-    quite=extra_args.get("extra_args",False)
+    quite=extra_args.get("quite",False)
 
     label_counter = Counter()
     total_loss = 0
