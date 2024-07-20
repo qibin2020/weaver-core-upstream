@@ -163,7 +163,7 @@ class DataConfig(object):
 
         if print_info:
             def _log(msg, *args, **kwargs):
-                _logger.info(msg, *args, color='lightgray', **kwargs)
+                _logger.debug(msg, *args, color='lightgray', **kwargs)
             _log('preprocess config: %s', str(self.preprocess))
             _log('selection: %s', str(self.selection))
             _log('test_time_selection: %s', str(self.test_time_selection))

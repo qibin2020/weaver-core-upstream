@@ -54,6 +54,7 @@ def train_classification(
     model.train()
 
     data_config = train_loader.dataset.config
+    quite=extra_args.get("extra_args",False)
 
     label_counter = Counter()
     total_loss = 0
@@ -118,8 +119,7 @@ def train_classification(
             if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                 break
             
-            if num_batches==2:
-                _logger.info("Running and I am quite.")
+            if quite and num_batches==1:
                 tq.close()
 
     time_diff = time.time() - start_time
@@ -149,6 +149,7 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
     model.eval()
 
     data_config = test_loader.dataset.config
+    quite=extra_args.get("extra_args",False)
 
     label_counter = Counter()
     total_loss = 0
@@ -213,8 +214,7 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
                 if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                     break
 
-                if num_batches==2:
-                    _logger.info("Running and I am quite.")
+                if quite and num_batches==1:
                     tq.close()
 
     time_diff = time.time() - start_time
