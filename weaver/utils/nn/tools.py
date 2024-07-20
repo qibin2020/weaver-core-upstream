@@ -117,6 +117,10 @@ def train_classification(
 
             if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                 break
+            
+            if num_batches==2:
+                _logger.info("Running and I am quite.")
+                tq.close()
 
     time_diff = time.time() - start_time
     _logger.info('Processed %d entries in total (avg. speed %.1f entries/s)' % (entry_count, entry_count / time_diff))
@@ -208,6 +212,10 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
 
                 if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                     break
+
+                if num_batches==2:
+                    _logger.info("Running and I am quite.")
+                    tq.close()
 
     time_diff = time.time() - start_time
     _logger.info('Processed %d entries in total (avg. speed %.1f entries/s)' % (entry_count, entry_count / time_diff))
