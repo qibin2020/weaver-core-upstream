@@ -54,7 +54,6 @@ def train_classification(
     model.train()
 
     data_config = train_loader.dataset.config
-    quite=extra_args.get("quite",False)
 
     label_counter = Counter()
     total_loss = 0
@@ -63,7 +62,7 @@ def train_classification(
     entry_count = 0
     count = 0
     start_time = time.time()
-    with tqdm.tqdm(train_loader) as tq:
+    with tqdm.tqdm(train_loader, disable=extra_args.get("quite",False)) as tq:
         for X, y, _ in tq:
             inputs = [X[k].to(dev) for k in data_config.input_names]
             label = y[data_config.label_names[0]].long().to(dev)
@@ -118,9 +117,6 @@ def train_classification(
 
             if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                 break
-            
-            if quite and num_batches==1:
-                tq.close()
 
     time_diff = time.time() - start_time
     _logger.info('Processed %d entries in total (avg. speed %.1f entries/s)' % (entry_count, entry_count / time_diff))
@@ -149,7 +145,6 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
     model.eval()
 
     data_config = test_loader.dataset.config
-    quite=extra_args.get("quite",False)
 
     label_counter = Counter()
     total_loss = 0
@@ -163,7 +158,7 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
     observers = defaultdict(list)
     start_time = time.time()
     with torch.no_grad():
-        with tqdm.tqdm(test_loader) as tq:
+        with tqdm.tqdm(test_loader, disable=extra_args.get("quite",False)) as tq:
             for X, y, Z in tq:
                 # X, y: torch.Tensor; Z: ak.Array
                 inputs = [X[k].to(dev) for k in data_config.input_names]
@@ -213,9 +208,6 @@ def evaluate_classification(model, test_loader, dev, epoch, for_training=True, l
 
                 if steps_per_epoch is not None and num_batches >= steps_per_epoch:
                     break
-
-                if quite and num_batches==1:
-                    tq.close()
 
     time_diff = time.time() - start_time
     _logger.info('Processed %d entries in total (avg. speed %.1f entries/s)' % (entry_count, entry_count / time_diff))
