@@ -972,7 +972,7 @@ def main():
     if args.data_config_test is None:
         args.data_config_test = args.data_config
 
-    if '{auto}' in args.model_prefix or '{auto}' in args.log or '{auto}' in args.tensorboard:
+    if '{auto}' in args.model_prefix or '{auto}' in args.log or (args.tensorboard and '{auto}' in args.tensorboard):
         import hashlib
         import time
         model_name = time.strftime('%Y%m%d-%H%M%S') + "_" + os.path.basename(args.network_config).replace('.py', '')
@@ -983,7 +983,7 @@ def main():
         args._auto_model_name = model_name
         args.model_prefix = args.model_prefix.replace('{auto}', model_name)
         args.log = args.log.replace('{auto}', model_name)
-        args.tensorboard = args.tensorboard.replace('{auto}', model_name)
+        args.tensorboard = args.tensorboard.replace('{auto}', model_name) if args.tensorboard else args.tensorboard
         print('Using auto-generated model prefix %s' % args.model_prefix)
 
     if args.predict_gpus is None:
