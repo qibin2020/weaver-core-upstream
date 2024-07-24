@@ -103,7 +103,7 @@ class DataConfig(object):
         # labels
         self.label_type = opts['labels']['type']
         self.label_value = opts['labels']['value']
-        self.label_count = -1
+        self.label_count = 10 # default Nlabel for for JC1
         if self.label_type == 'simple':
             assert (isinstance(self.label_value, list))
             self.label_names = ('_label_',)
@@ -114,7 +114,7 @@ class DataConfig(object):
         else:
             self.label_names = tuple(self.label_value.keys())
             self.register(self.label_value)
-            self.label_count=opts['labels']['count']
+            self.label_count=opts['labels'].get('count',10) # default Nlabel for for JC1
         self.basewgt_name = '_basewgt_'
         self.weight_name = None
         if opts['weights'] is not None:
