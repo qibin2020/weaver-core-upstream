@@ -146,8 +146,10 @@ parser.add_argument('--backend', type=str, choices=['gloo', 'nccl', 'mpi'], defa
                     help='backend for distributed training')
 parser.add_argument('--cross-validation', type=str, default=None,
                     help='enable k-fold cross validation; input format: `variable_name%%k`')
-
-
+parser.add_argument('--quite', action='store_true', default=True,
+                    help='suppress verbose as much, including tqdm')
+parser.add_argument('--clean', action='store_true', default=False,
+                    help='Clean ckpt storage')
 def to_filelist(args, mode='train'):
     if mode == 'train':
         flist = args.data_train
@@ -792,6 +794,7 @@ def save_parquet(args, output_path, scores, labels, observers):
 
 def _main(args):
     _logger.info('args:\n - %s', '\n - '.join(str(it) for it in args.__dict__.items()))
+    quite=args.quite
 
     # export to ONNX
     if args.export_onnx:
@@ -927,8 +930,8 @@ def _main(args):
             _logger.info('Epoch #%d: Current validation metric: %.5f (best: %.5f)' %
                          (epoch, valid_metric, best_valid_metric), color='bold')
             # clean the old ckpt. For one model save at most 10 ckpts+best
-            save_interval=args.num_epochs // 10
-            if epoch-1>0 and (epoch-1) % save_interval != 0:
+            save_interval=args.num_epochs // 5
+            if args.clean or (epoch-1>0 and (epoch-1) % save_interval != 0): # not save anything except last epoch.
                 _logger.info('Epoch #%d: Clean previous ckpt...' % epoch)
                 try:
                     os.remove(args.model_prefix + '_epoch-%d_state.pt' % (epoch-1)) 
@@ -995,6 +998,14 @@ def _main(args):
                 else:
                     save_parquet(args, output_path, scores, labels, observers)
 
+        # del best, to save storage
+        if args.clean:
+            _logger.info(f'Clean mode, del {model_path}')
+            assert "best_epoch_state.pt" in model_path
+            try:
+                os.remove(model_path) 
+            except Exception as e:
+                pass
 
 def main():
     args = parser.parse_args()
