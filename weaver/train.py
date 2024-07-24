@@ -455,6 +455,9 @@ def optim(args, model, device):
         decay_1x, no_decay_1x = [], []
         decay_mult, no_decay_mult = [], []
         mult_factor = 1
+        decay_mults={}
+        no_decay_mults={}
+        mult_factors = {}
         if 'lr_mult' in optimizer_options:
             pattern, mult_factor = optimizer_options.pop('lr_mult')
             for name, param in decay.items():
@@ -471,18 +474,64 @@ def optim(args, model, device):
                     no_decay_1x.append(param)
             assert (len(decay_1x) + len(decay_mult) == len(decay))
             assert (len(no_decay_1x) + len(no_decay_mult) == len(no_decay))
+        elif 'lr_mults' in optimizer_options:
+            ps=optimizer_options.pop('lr_mults')
+            mult_factors=dict(ps)
+            for name, param in decay.items():
+                matched=False
+                for pattern, mult_factor in ps:
+                    if re.match(pattern, name):
+                        if pattern in decay_mults:
+                            decay_mults[pattern].append(param)
+                        else:
+                            decay_mults[pattern]=[param]
+                        names_lr_mult.append(name)
+                        matched=True
+                        break
+                if not matched:
+                    decay_1x.append(param)
+            for name, param in no_decay.items():
+                matched=False
+                for pattern, mult_factor in ps:
+                    if re.match(pattern, name):
+                        if pattern in no_decay_mults:
+                            no_decay_mults[pattern].append(param)
+                        else:
+                            no_decay_mults[pattern]=[param]
+                        names_lr_mult.append(name)
+                        matched=True
+                        break
+                if not matched:
+                    no_decay_1x.append(param)
+            assert (sum([len(x) for x in decay_mults.values()])+len(decay_1x) == len(decay))
+            assert (sum([len(x) for x in no_decay_mults.values()])+len(no_decay_1x) == len(no_decay))
         else:
             decay_1x, no_decay_1x = list(decay.values()), list(no_decay.values())
         wd = optimizer_options.pop('weight_decay', 0.)
         parameters = [
             {'params': no_decay_1x, 'weight_decay': 0.},
             {'params': decay_1x, 'weight_decay': wd},
-            {'params': no_decay_mult, 'weight_decay': 0., 'lr': args.start_lr * mult_factor},
-            {'params': decay_mult, 'weight_decay': wd, 'lr': args.start_lr * mult_factor},
         ]
+        if mult_factors:
+            for pattern in decay_mults:
+                parameters+=[
+                    {'params': decay_mults[pattern], 'weight_decay': wd, 'lr': args.start_lr * mult_factors[pattern]},
+                ]
+            for pattern in no_decay_mults:
+                parameters+=[
+                    {'params': no_decay_mults[pattern], 'weight_decay': 0., 'lr': args.start_lr * mult_factors[pattern]},
+                ]
+        if mult_factor!=1:
+            parameters+=[
+                {'params': no_decay_mult, 'weight_decay': 0., 'lr': args.start_lr * mult_factor},
+                {'params': decay_mult, 'weight_decay': wd, 'lr': args.start_lr * mult_factor},
+            ]
         _logger.info('Parameters excluded from weight decay:\n - %s', '\n - '.join(names_no_decay))
         if len(names_lr_mult):
-            _logger.info('Parameters with lr multiplied by %s:\n - %s', mult_factor, '\n - '.join(names_lr_mult))
+            if mult_factors:
+                _logger.info('Parameters with lr(s) multiplied by %s:\n - %s', mult_factors, '\n - '.join(names_lr_mult))
+            else:
+                _logger.info('Parameters with lr multiplied by %s:\n - %s', mult_factor, '\n - '.join(names_lr_mult))
     else:
         parameters = model.parameters()
 
