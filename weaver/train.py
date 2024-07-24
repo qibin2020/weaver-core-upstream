@@ -54,8 +54,13 @@ parser.add_argument('--fetch-by-files', action='store_true', default=False,
 parser.add_argument('--fetch-step', type=float, default=0.01,
                     help='fraction of events to load each time from every file (when ``--fetch-by-files`` is disabled); '
                          'Or: number of files to load each time (when ``--fetch-by-files`` is enabled). Shuffling & sampling is done within these events, so set a large enough value.')
+parser.add_argument('--fetch-step-val', type=float, default=0,
+                    help='fraction of events to load each time from every file (when ``--fetch-by-files`` is disabled); '
+                         'Or: number of files to load each time (when ``--fetch-by-files`` is enabled). Shuffling & sampling is done within these events, so set a large enough value. For validation.')
 parser.add_argument('--in-memory', action='store_true', default=False,
                     help='load the whole dataset (and perform the preprocessing) only once and keep it in memory for the entire run')
+parser.add_argument('--in-memory-val', action='store_true', default=False,
+                    help='load the whole dataset (and perform the preprocessing) only once and keep it in memory for the entire run, for validation')
 parser.add_argument('--train-val-split', type=float, default=0.8,
                     help='training/validation split fraction')
 parser.add_argument('--no-remake-weights', action='store_true', default=False,
@@ -245,6 +250,9 @@ def train_load(args):
             _logger.warning(
                 'Running with --in-memory, but --fetch-step is set to a value below 1 (or --fetch-by-files is set). '
                 'This means only a fraction of data will be loaded throughout the training.', color='bold')
+    
+    if args.fetch_step_val==0: # default
+        args.fetch_step_val=args.fetch_step
 
     train_data = SimpleIterDataset(train_file_dict, args.data_config,
                                    batch_size=args.batch_size,
@@ -265,9 +273,9 @@ def train_load(args):
                                  load_range_and_fraction=(val_range, args.data_fraction),
                                  file_fraction=args.file_fraction,
                                  fetch_by_files=args.fetch_by_files,
-                                 fetch_step=args.fetch_step,
+                                 fetch_step=args.fetch_step_val,
                                  infinity_mode=args.steps_per_epoch_val is not None,
-                                 in_memory=args.in_memory,
+                                 in_memory=args.in_memory_val,
                                  name='val' + ('' if args.local_rank is None else '_rank%d' % args.local_rank))
     train_loader = DataLoader(train_data, batch_size=args.batch_size, drop_last=True, pin_memory=True,
                               num_workers=min(args.num_workers, int(len(train_files) * args.file_fraction)),
