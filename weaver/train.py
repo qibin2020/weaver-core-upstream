@@ -1040,6 +1040,7 @@ def main():
             model_name = model_name + "_" + hashlib.md5(str(args.network_option).encode('utf-8')).hexdigest()[:8]
         model_name += '_{optim}_lr{lr}_batch{batch}'.format(lr=args.start_lr,
                                                             optim=args.optimizer, batch=args.batch_size)
+        model_name += f"__{np.random.randint(0,9999):4d}" # prevent overlap!
         args._auto_model_name = model_name
         args.model_prefix = args.model_prefix.replace('{auto}', model_name)
         args.log = args.log.replace('{auto}', model_name)
