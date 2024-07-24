@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from weaver.utils.logger import _logger, _configLogger
 from weaver.utils.dataset import SimpleIterDataset
 from weaver.utils.import_tools import import_module
+from weaver.utils.data.eval_utils import _register_funcs
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--regression-mode', action='store_true', default=False,
@@ -26,9 +27,11 @@ parser.add_argument('--data-config-val', type=str, default=None,
                     help='data config YAML file for validation set')
 parser.add_argument('--data-config-test', type=str, default=None,
                     help='data config YAML file for test set')
-parser.add_argument('--extra-selection', type=str, default=None,
-                    help='Additional selection requirement, will modify `selection` to `(selection) & (extra)` on-the-fly')
-parser.add_argument('--extra-test-selection', type=str, default=None,
+parser.add_argument('--extra-selection-train', type=str, default=None,
+                    help='Additional selection requirement for training, will modify `selection` to `(selection) & (extra)` on-the-fly')
+parser.add_argument('--extra-selection-val', type=str, default=None,
+                    help='Additional selection requirement for validation, will modify `selection` to `(selection) & (extra)` on-the-fly')
+parser.add_argument('--extra-selection-test', type=str, default=None,
                     help='Additional test-time selection requirement, will modify `test_time_selection` to `(test_time_selection) & (extra)` on-the-fly')
 parser.add_argument('-i', '--data-train', nargs='*', default=[],
                     help='training files; supported syntax:'
@@ -74,8 +77,10 @@ parser.add_argument('--tensorboard', type=str, default=None,
 parser.add_argument('--tensorboard-custom-fn', type=str, default=None,
                     help='the path of the python script containing a user-specified function `get_tensorboard_custom_fn`, '
                          'to display custom information per mini-batch or per epoch, during the training, validation or test.')
+parser.add_argument('--custom-functions', type=str,
+                    help='python file implementing extra functions for data loading and pre-processing')
 parser.add_argument('-n', '--network-config', type=str,
-                    help='network architecture configuration file; the path must be relative to the current dir')
+                    help='network architecture configuration file')
 parser.add_argument('-o', '--network-option', nargs=2, action='append', default=[],
                     help='options to pass to the model class constructor, e.g., `--network-option use_counts False`')
 parser.add_argument('-m', '--model-prefix', type=str, default='models/{auto}/network',
@@ -120,6 +125,10 @@ parser.add_argument('--start-lr', type=float, default=5e-3,
                     help='start learning rate')
 parser.add_argument('--batch-size', type=int, default=128,
                     help='batch size')
+parser.add_argument('--batch-size-val', type=int, default=None,
+                    help='batch size for validation dataset')
+parser.add_argument('--batch-size-test', type=int, default=None,
+                    help='batch size for test dataset')
 parser.add_argument('--use-amp', action='store_true', default=False,
                     help='use mixed precision training (fp16)')
 parser.add_argument('--gpus', type=str, default='0',
@@ -257,7 +266,7 @@ def train_load(args):
     train_data = SimpleIterDataset(train_file_dict, args.data_config,
                                    batch_size=args.batch_size,
                                    for_training=True,
-                                   extra_selection=args.extra_selection,
+                                   extra_selection=args.extra_selection_train,
                                    remake_weights=not args.no_remake_weights,
                                    load_range_and_fraction=(train_range, args.data_fraction),
                                    file_fraction=args.file_fraction,
@@ -267,9 +276,9 @@ def train_load(args):
                                    in_memory=args.in_memory,
                                    name='train' + ('' if args.local_rank is None else '_rank%d' % args.local_rank))
     val_data = SimpleIterDataset(val_file_dict, args.data_config_val,
-                                 batch_size=args.batch_size,
+                                 batch_size=args.batch_size_val,
                                  for_training=True,
-                                 extra_selection=args.extra_selection,
+                                 extra_selection=args.extra_selection_val,
                                  load_range_and_fraction=(val_range, args.data_fraction),
                                  file_fraction=args.file_fraction,
                                  fetch_by_files=args.fetch_by_files,
@@ -280,7 +289,7 @@ def train_load(args):
     train_loader = DataLoader(train_data, batch_size=args.batch_size, drop_last=True, pin_memory=True,
                               num_workers=min(args.num_workers, int(len(train_files) * args.file_fraction)),
                               persistent_workers=args.num_workers > 0 and args.steps_per_epoch is not None)
-    val_loader = DataLoader(val_data, batch_size=args.batch_size, drop_last=True, pin_memory=True,
+    val_loader = DataLoader(val_data, batch_size=args.batch_size_val, drop_last=True, pin_memory=True,
                             num_workers=min(args.num_workers, int(len(val_files) * args.file_fraction)),
                             persistent_workers=args.num_workers > 0 and args.steps_per_epoch_val is not None)
     train_data_config = train_data.config
@@ -328,11 +337,11 @@ def test_load(args):
         _logger.info('Running on test file group %s with %d files:\n...%s', name, len(filelist), '\n...'.join(filelist))
         num_workers = min(args.num_workers, len(filelist))
         test_data = SimpleIterDataset({name: filelist}, args.data_config_test, for_training=False,
-                                      extra_selection=args.extra_test_selection,
+                                      extra_selection=args.extra_selection_test,
                                       load_range_and_fraction=((0, 1), args.data_fraction),
                                       fetch_by_files=True, fetch_step=1,
                                       name='test_' + name)
-        test_loader = DataLoader(test_data, num_workers=num_workers, batch_size=args.batch_size, drop_last=False,
+        test_loader = DataLoader(test_data, num_workers=num_workers, batch_size=args.batch_size_test, drop_last=False,
                                  pin_memory=True)
         return test_loader
 
@@ -1018,6 +1027,11 @@ def _main(args):
 def main():
     args = parser.parse_args()
 
+    if args.batch_size_val is None:
+        args.batch_size_val = args.batch_size
+    if args.batch_size_test is None:
+        args.batch_size_test = args.batch_size
+
     if args.samples_per_epoch is not None:
         if args.steps_per_epoch is None:
             args.steps_per_epoch = args.samples_per_epoch // args.batch_size
@@ -1026,12 +1040,13 @@ def main():
 
     if args.samples_per_epoch_val is not None:
         if args.steps_per_epoch_val is None:
-            args.steps_per_epoch_val = args.samples_per_epoch_val // args.batch_size
+            args.steps_per_epoch_val = args.samples_per_epoch_val // args.batch_size_val
         else:
             raise RuntimeError('Please use either `--steps-per-epoch-val` or `--samples-per-epoch-val`, but not both!')
 
     if args.steps_per_epoch_val is None and args.steps_per_epoch is not None:
-        args.steps_per_epoch_val = round(args.steps_per_epoch * (1 - args.train_val_split) / args.train_val_split)
+        args.steps_per_epoch_val = round(
+            args.steps_per_epoch * args.batch_size * (1 - args.train_val_split) / args.train_val_split / args.batch_size_val)
     if args.steps_per_epoch_val is not None and args.steps_per_epoch_val < 0:
         args.steps_per_epoch_val = None
 
@@ -1039,6 +1054,10 @@ def main():
         args.data_config_val = args.data_config
     if args.data_config_test is None:
         args.data_config_test = args.data_config
+
+    if args.custom_functions is not None:
+        func_module = import_module(args.custom_functions, '_func_module')
+        _register_funcs(func_module)
 
     if '{auto}' in args.model_prefix or '{auto}' in args.log or (args.tensorboard and '{auto}' in args.tensorboard):
         import hashlib
@@ -1080,8 +1099,9 @@ def main():
             opts.model_prefix = os.path.join(f'{model_dir}_fold{i}', model_fn)
             if args.predict_output:
                 opts.predict_output = f'{predict_output_base}_fold{i}' + predict_output_ext
-            opts.extra_selection = f'{var_name}%{kfold}!={i}'
-            opts.extra_test_selection = f'{var_name}%{kfold}=={i}'
+            opts.extra_selection_train = f'{var_name}%{kfold}!={i}'
+            opts.extra_selection_val = opts.extra_selection_train
+            opts.extra_selection_test = f'{var_name}%{kfold}=={i}'
             if load_model and '{fold}' in load_model:
                 opts.load_model_weights = load_model.replace('{fold}', f'fold{i}')
 
