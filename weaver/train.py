@@ -19,6 +19,8 @@ from weaver.utils.import_tools import import_module
 from weaver.utils.data.eval_utils import _register_funcs
 
 parser = argparse.ArgumentParser()
+parser.add_argument('--run-mode', type=functools.partial(str.split, sep=','), default='train,val,test',
+                    help='comma-separated list of the steps (train|val|test) to run, e.g., `train,test`')
 parser.add_argument('--regression-mode', action='store_true', default=False,
                     help='run in regression mode if this flag is set; otherwise run in classification mode')
 parser.add_argument('-c', '--data-config', type=str,
@@ -60,6 +62,8 @@ parser.add_argument('--fetch-step', type=float, default=0.01,
 parser.add_argument('--fetch-step-val', type=float, default=0,
                     help='fraction of events to load each time from every file (when ``--fetch-by-files`` is disabled); '
                          'Or: number of files to load each time (when ``--fetch-by-files`` is enabled). Shuffling & sampling is done within these events, so set a large enough value. For validation.')
+parser.add_argument('--data-split-num', type=int, default=1,
+                    help='for each dataloader worker, split its dataset further into N parts when loading a certain fraction of each file. Setting N > 1 can reduce the workers\' memory usage.')
 parser.add_argument('--in-memory', action='store_true', default=False,
                     help='load the whole dataset (and perform the preprocessing) only once and keep it in memory for the entire run')
 parser.add_argument('--in-memory-val', action='store_true', default=False,
@@ -110,9 +114,9 @@ parser.add_argument('--samples-per-epoch', type=int, default=None,
 parser.add_argument('--samples-per-epoch-val', type=int, default=None,
                     help='number of samples per epochs for validation; '
                          'if neither of `--steps-per-epoch-val` or `--samples-per-epoch-val` is set, each epoch will run over all loaded samples')
-parser.add_argument('--optimizer', type=str, default='ranger', choices=['adam', 'adamW', 'radam', 'ranger'],  # TODO: add more
-                    help='optimizer for the training')
-parser.add_argument('--optimizer-option', nargs=2, action='append', default=[],
+parser.add_argument('--optimizer', type=str, default='ranger',
+                    help='optimizer for the training; For any PyTorch built-in optimizer in torch.optim, use the case-sensitive class name, e.g., AdamW')
+parser.add_argument('-p', '--optimizer-option', nargs=2, action='append', default=[],
                     help='options to pass to the optimizer class constructor, e.g., `--optimizer-option weight_decay 1e-4`')
 parser.add_argument('--lr-scheduler', type=str, default='flat+decay',
                     choices=['none', 'steps', 'flat+decay', 'flat+linear', 'flat+cos', 'one-cycle'],
@@ -150,7 +154,7 @@ parser.add_argument('--io-test', action='store_true', default=False,
                     help='test throughput of the dataloader')
 parser.add_argument('--copy-inputs', action='store_true', default=False,
                     help='copy input files to the current dir (can help to speed up dataloading when running over remote files, e.g., from EOS)')
-parser.add_argument('--log', type=str, default='',
+parser.add_argument('--log-file', type=str, dest='log', default='',
                     help='path to the log file; `{auto}` can be used as part of the path to auto-generate a name, based on the timestamp and network configuration')
 parser.add_argument('--print', action='store_true', default=False,
                     help='do not run training/prediction but only print model information, e.g., FLOPs and number of parameters of a model')
@@ -162,8 +166,10 @@ parser.add_argument('--cross-validation', type=str, default=None,
                     help='enable k-fold cross validation; input format: `variable_name%%k`')
 parser.add_argument('--quite', action='store_true', default=True,
                     help='suppress verbose as much, including tqdm')
-parser.add_argument('--clean', action='store_true', default=False,
-                    help='Clean ckpt storage')
+parser.add_argument('--auto-clean', action='store_true', default=False,
+                    help='automatically remove the previous checkpoints, keeping only the last epoch and the best epoch')
+
+
 def to_filelist(args, mode='train'):
     if mode == 'train':
         flist = args.data_train
@@ -190,7 +196,7 @@ def to_filelist(args, mode='train'):
         file_dict[name] = sorted(files)
 
     if args.local_rank is not None:
-        if mode == 'train':
+        if mode == 'train' or mode == 'val':
             local_world_size = int(os.environ['LOCAL_WORLD_SIZE'])
             new_file_dict = {}
             for name, files in file_dict.items():
@@ -250,6 +256,7 @@ def train_load(args):
         _logger.info(train_files)
         _logger.info(val_files)
         args.data_fraction = 0.1
+        args.data_split_num = 1
         args.fetch_step = 0.002
 
     if args.in_memory:
@@ -268,7 +275,7 @@ def train_load(args):
                                    for_training=True,
                                    extra_selection=args.extra_selection_train,
                                    remake_weights=not args.no_remake_weights,
-                                   load_range_and_fraction=(train_range, args.data_fraction),
+                                   load_range_and_fraction=(train_range, args.data_fraction, args.data_split_num),
                                    file_fraction=args.file_fraction,
                                    fetch_by_files=args.fetch_by_files,
                                    fetch_step=args.fetch_step,
@@ -279,7 +286,7 @@ def train_load(args):
                                  batch_size=args.batch_size_val,
                                  for_training=True,
                                  extra_selection=args.extra_selection_val,
-                                 load_range_and_fraction=(val_range, args.data_fraction),
+                                 load_range_and_fraction=(val_range, args.data_fraction, args.data_split_num),
                                  file_fraction=args.file_fraction,
                                  fetch_by_files=args.fetch_by_files,
                                  fetch_step=args.fetch_step_val,
@@ -287,10 +294,10 @@ def train_load(args):
                                  in_memory=args.in_memory_val,
                                  name='val' + ('' if args.local_rank is None else '_rank%d' % args.local_rank))
     train_loader = DataLoader(train_data, batch_size=args.batch_size, drop_last=True, pin_memory=True,
-                              num_workers=min(args.num_workers, int(len(train_files) * args.file_fraction)),
+                              num_workers=min(args.num_workers, max(1, int(len(train_files) * args.file_fraction))),
                               persistent_workers=args.num_workers > 0 and args.steps_per_epoch is not None)
     val_loader = DataLoader(val_data, batch_size=args.batch_size_val, drop_last=True, pin_memory=True,
-                            num_workers=min(args.num_workers, int(len(val_files) * args.file_fraction)),
+                            num_workers=min(args.num_workers, max(1, int(len(val_files) * args.file_fraction))),
                             persistent_workers=args.num_workers > 0 and args.steps_per_epoch_val is not None)
     train_data_config = train_data.config
     val_data_config = val_data.config
@@ -338,7 +345,7 @@ def test_load(args):
         num_workers = min(args.num_workers, len(filelist))
         test_data = SimpleIterDataset({name: filelist}, args.data_config_test, for_training=False,
                                       extra_selection=args.extra_selection_test,
-                                      load_range_and_fraction=((0, 1), args.data_fraction),
+                                      load_range_and_fraction=((0, 1), args.data_fraction, args.data_split_num),
                                       fetch_by_files=True, fetch_step=1,
                                       name='test_' + name)
         test_loader = DataLoader(test_data, num_workers=num_workers, batch_size=args.batch_size_test, drop_last=False,
@@ -445,16 +452,7 @@ def profile(args, model, model_info, device):
             p.step()
 
 
-def optim(args, model, device):
-    """
-    Optimizer and scheduler.
-    :param args:
-    :param model:
-    :return:
-    """
-    optimizer_options = {k: ast.literal_eval(v) for k, v in args.optimizer_option}
-    _logger.info('Optimizer options: %s' % str(optimizer_options))
-
+def init_opt(args, model, **optimizer_options):
     names_lr_mult = []
     if 'weight_decay' in optimizer_options or 'lr_mult' in optimizer_options:
         # https://github.com/rwightman/pytorch-image-models/blob/master/timm/optim/optim_factory.py#L31
@@ -554,7 +552,7 @@ def optim(args, model, device):
     else:
         parameters = model.parameters()
 
-    if args.optimizer == 'ranger':
+    if args.optimizer.lower() == 'ranger':
         from weaver.utils.nn.optimizer.ranger import Ranger
         opt = Ranger(parameters, lr=args.start_lr, **optimizer_options)
     elif args.optimizer == 'adam':
@@ -563,21 +561,8 @@ def optim(args, model, device):
         opt = torch.optim.AdamW(parameters, lr=args.start_lr, **optimizer_options)
     elif args.optimizer == 'radam':
         opt = torch.optim.RAdam(parameters, lr=args.start_lr, **optimizer_options)
-
-    # load previous training and resume if `--load-epoch` is set
-    if args.load_epoch is not None:
-        _logger.info('Resume training from epoch %d' % args.load_epoch)
-        model_state = torch.load(args.model_prefix + '_epoch-%d_state.pt' % args.load_epoch, map_location=device)
-        if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-            model.module.load_state_dict(model_state)
-        else:
-            model.load_state_dict(model_state)
-        opt_state_file = args.model_prefix + '_epoch-%d_optimizer.pt' % args.load_epoch
-        if os.path.exists(opt_state_file):
-            opt_state = torch.load(opt_state_file, map_location=device)
-            opt.load_state_dict(opt_state)
-        else:
-            _logger.warning('Optimizer state file %s NOT found!' % opt_state_file)
+    else:
+        opt = getattr(torch.optim, args.optimizer)(parameters, lr=args.start_lr, **optimizer_options)
 
     scheduler = None
     if args.lr_finder is None:
@@ -629,6 +614,22 @@ def optim(args, model, device):
                 anneal_strategy='cos', div_factor=25.0, last_epoch=-1 if args.load_epoch is None else args.load_epoch)
             scheduler._update_per_step = True  # mark it to update the lr every step, instead of every epoch
     return opt, scheduler
+
+
+def load_checkpoint(args, model, opt):
+    # load previous training and resume if `--load-epoch` is set
+    _logger.info('Resume training from epoch %d' % args.load_epoch)
+    model_state = torch.load(args.model_prefix + '_epoch-%d_state.pt' % args.load_epoch, map_location='cpu')
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+        model.module.load_state_dict(model_state)
+    else:
+        model.load_state_dict(model_state)
+    opt_state_file = args.model_prefix + '_epoch-%d_optimizer.pt' % args.load_epoch
+    if os.path.exists(opt_state_file):
+        opt_state = torch.load(opt_state_file, map_location='cpu')
+        opt.load_state_dict(opt_state)
+    else:
+        _logger.warning('Optimizer state file %s NOT found!' % opt_state_file)
 
 
 def model_setup(args, data_config, device='cpu'):
@@ -708,6 +709,23 @@ def model_setup(args, data_config, device='cpu'):
             from weaver.utils.nn.tools import train_classification as train
             from weaver.utils.nn.tools import evaluate_classification as evaluate
     return model, model_info, loss_func, train, evaluate
+
+
+def optimizer_setup(args, model):
+    """
+    Optimizer and scheduler.
+    :param args:
+    :param model:
+    :return:
+    """
+    optimizer_options = {k: ast.literal_eval(v) for k, v in args.optimizer_option}
+    _logger.info('Optimizer options: %s' % str(optimizer_options))
+
+    network_module = import_module(args.network_config, name='_network_module')
+    try:
+        return network_module.init_opt(args, model, **optimizer_options)
+    except AttributeError:
+        return init_opt(args, model, **optimizer_options)
 
 
 def iotest(args, data_loader):
@@ -822,7 +840,10 @@ def _main(args):
         _logger.warning('Use of `file-fraction` is not recommended in general -- prefer using `data-fraction` instead.')
 
     # training/testing mode
-    training_mode = not args.predict
+    if args.predict:
+        _logger.warning('The `--predict` flag is set. Overriding the `--run-mode` to `test`.')
+        args.run_mode = ['test']
+    training_mode = any(m in args.run_mode for m in ['train', 'val'])
 
     # device
     if args.gpus:
@@ -859,10 +880,6 @@ def _main(args):
 
     model, model_info, loss_func, train, evaluate = model_setup(args, data_config, device=dev)
 
-    # TODO: load checkpoint
-    # if args.backend is not None:
-    #     load_checkpoint()
-
     if args.print:
         return
 
@@ -887,10 +904,13 @@ def _main(args):
         if args.backend is not None:
             model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
             model = torch.nn.parallel.DistributedDataParallel(
-                model, device_ids=gpus, output_device=local_rank, find_unused_parameters=True)
+                model, device_ids=gpus, output_device=local_rank, find_unused_parameters=False)
 
         # optimizer & learning rate
-        opt, scheduler = optim(args, model, dev)
+        opt, scheduler = optimizer_setup(args, model)
+
+        if args.load_epoch is not None:
+            load_checkpoint(args, model, opt)
 
         # DataParallel
         if args.backend is None:
@@ -911,52 +931,48 @@ def _main(args):
 
         # training loop
         best_valid_metric = np.inf if args.regression_mode else 0
-        grad_scaler = torch.cuda.amp.GradScaler() if args.use_amp else None
+        grad_scaler = torch.GradScaler('cuda') if args.use_amp else None
         for epoch in range(args.num_epochs):
             if args.load_epoch is not None:
                 if epoch <= args.load_epoch:
                     continue
             _logger.info('-' * 50)
-            _logger.info('Epoch #%d training' % epoch)
-            train(model, loss_func, opt, scheduler, train_loader, dev, epoch,
-                  steps_per_epoch=args.steps_per_epoch, grad_scaler=grad_scaler, tb_helper=tb, extra_args=locals())
-            if args.model_prefix and (args.backend is None or local_rank == 0):
-                dirname = os.path.dirname(args.model_prefix)
-                if dirname and not os.path.exists(dirname):
-                    os.makedirs(dirname)
-                state_dict = model.module.state_dict() if isinstance(
-                    model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)) else model.state_dict()
-                torch.save(state_dict, args.model_prefix + '_epoch-%d_state.pt' % epoch)
-                torch.save(opt.state_dict(), args.model_prefix + '_epoch-%d_optimizer.pt' % epoch)
-            # if args.backend is not None and local_rank == 0:
-            # TODO: save checkpoint
-            #     save_checkpoint()
 
-            _logger.info('Epoch #%d validating' % epoch)
-            valid_metric = evaluate(model, val_loader, dev, epoch, loss_func=loss_func,
-                                    steps_per_epoch=args.steps_per_epoch_val, tb_helper=tb, extra_args=locals())
-            is_best_epoch = (
-                valid_metric < best_valid_metric) if args.regression_mode else (
-                valid_metric > best_valid_metric)
-            if is_best_epoch:
-                best_valid_metric = valid_metric
+            if 'train' in args.run_mode:
+                _logger.info('Epoch #%d training' % epoch)
+                train(model, loss_func, opt, scheduler, train_loader, dev, epoch,
+                    steps_per_epoch=args.steps_per_epoch, grad_scaler=grad_scaler, tb_helper=tb, extra_args=locals())
                 if args.model_prefix and (args.backend is None or local_rank == 0):
-                    shutil.copy2(args.model_prefix + '_epoch-%d_state.pt' %
-                                 epoch, args.model_prefix + '_best_epoch_state.pt')
-                    # torch.save(model, args.model_prefix + '_best_epoch_full.pt')
-            _logger.info('Epoch #%d: Current validation metric: %.5f (best: %.5f)' %
-                         (epoch, valid_metric, best_valid_metric), color='bold')
-            # clean the old ckpt. For one model save at most 10 ckpts+best
-            save_interval=args.num_epochs // 5
-            if args.clean or (epoch-1>0 and (epoch-1) % save_interval != 0): # not save anything except last epoch.
-                _logger.info('Epoch #%d: Clean previous ckpt...' % epoch)
-                try:
-                    os.remove(args.model_prefix + '_epoch-%d_state.pt' % (epoch-1)) 
-                    os.remove(args.model_prefix + '_epoch-%d_optimizer.pt' % (epoch-1)) 
-                except Exception as e:
-                    pass
+                    dirname = os.path.dirname(args.model_prefix)
+                    if dirname and not os.path.exists(dirname):
+                        os.makedirs(dirname)
+                    prev_ckpts = glob.glob(args.model_prefix + '_epoch-*.pt') if args.auto_clean else []
+                    state_dict = model.module.state_dict() if isinstance(
+                        model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel)) else model.state_dict()
+                    torch.save(state_dict, args.model_prefix + '_epoch-%d_state.pt' % epoch)
+                    torch.save(opt.state_dict(), args.model_prefix + '_epoch-%d_optimizer.pt' % epoch)
+                    for f in prev_ckpts:
+                        os.remove(f)
 
-    if args.data_test:
+            if 'val' in args.run_mode:
+                _logger.info('Epoch #%d validating' % epoch)
+                if 'train' not in args.run_mode:
+                    model.load_state_dict(torch.load(args.model_prefix + '_epoch-%d_state.pt' % epoch, map_location=dev))
+                valid_metric = evaluate(model, val_loader, dev, epoch, loss_func=loss_func,
+                                        steps_per_epoch=args.steps_per_epoch_val, tb_helper=tb, extra_args=locals())
+                is_best_epoch = (
+                    valid_metric < best_valid_metric) if args.regression_mode else (
+                    valid_metric > best_valid_metric)
+                if is_best_epoch:
+                    best_valid_metric = valid_metric
+                    if args.model_prefix and (args.backend is None or local_rank == 0):
+                        shutil.copy2(args.model_prefix + '_epoch-%d_state.pt' %
+                                    epoch, args.model_prefix + '_best_epoch_state.pt')
+                        # torch.save(model, args.model_prefix + '_best_epoch_full.pt')
+                _logger.info('Epoch #%d: Current validation metric: %.5f (best: %.5f)' %
+                            (epoch, valid_metric, best_valid_metric), color='bold')
+
+    if 'test' in args.run_mode and args.data_test:
         if args.backend is not None and local_rank != 0:
             return
         if training_mode:
