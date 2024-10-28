@@ -169,6 +169,8 @@ parser.add_argument('--quite', action='store_true', default=True,
                     help='suppress verbose as much, including tqdm')
 parser.add_argument('--auto-clean', action='store_true', default=False,
                     help='automatically remove the previous checkpoints, keeping only the last epoch and the best epoch')
+parser.add_argument('--best-clean', action='store_true', default=False,
+                    help='clean the best pt as well (e.g. when not needed to reload)')
 
 
 def to_filelist(args, mode='train'):
@@ -352,7 +354,7 @@ def test_load(args):
         test_data = SimpleIterDataset({name: filelist}, args.data_config_test, for_training=False,
                                       extra_selection=args.extra_selection_test,
                                       load_range_and_fraction=((0, 1), args.data_fraction, args.data_split_num),
-                                      fetch_by_files=True, fetch_step=1,
+                                      fetch_by_files=True if args.fetch_step_test==1 else False, fetch_step=args.fetch_step_test,
                                       name='test_' + name)
         test_loader = DataLoader(test_data, num_workers=num_workers, batch_size=args.batch_size_test, drop_last=False,
                                  pin_memory=True)
@@ -1045,7 +1047,7 @@ def _main(args):
                     save_parquet(args, output_path, scores, labels, observers)
 
         # del best, to save storage
-        if args.clean:
+        if args.best_clean:
             _logger.info(f'Clean mode, del {model_path}')
             assert "best_epoch_state.pt" in model_path
             try:
