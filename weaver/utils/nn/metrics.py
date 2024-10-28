@@ -61,6 +61,9 @@ def _get_metric(metric):
 
 def evaluate_metrics(y_true, y_score, eval_metrics=[]):
     results = {}
+    if len(y_true.shape)==1 and len(y_score.shape)==2:
+            # correct 2-class output
+            y_score=y_score[...,-1]
     for metric in eval_metrics:
         if callable(metric):
             metric, func = metric.__name__, metric
@@ -71,5 +74,6 @@ def evaluate_metrics(y_true, y_score, eval_metrics=[]):
         except Exception as e:
             results[metric] = None
             _logger.warning(f'Cannot compute metric {metric}: {str(e)}')
+            _logger.warning(f'y_true {np.unique(y_true)} {y_true.shape}, y_score {y_score.shape}')
             _logger.debug(traceback.format_exc())
     return results
