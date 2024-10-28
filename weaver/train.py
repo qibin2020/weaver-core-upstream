@@ -165,12 +165,14 @@ parser.add_argument('--backend', type=str, choices=['gloo', 'nccl', 'mpi'], defa
                     help='backend for distributed training')
 parser.add_argument('--cross-validation', type=str, default=None,
                     help='enable k-fold cross validation; input format: `variable_name%%k`')
-parser.add_argument('--quite', action='store_true', default=True,
+parser.add_argument('--quite', action='store_true', default=False,
                     help='suppress verbose as much, including tqdm')
 parser.add_argument('--auto-clean', action='store_true', default=False,
                     help='automatically remove the previous checkpoints, keeping only the last epoch and the best epoch')
 parser.add_argument('--best-clean', action='store_true', default=False,
                     help='clean the best pt as well (e.g. when not needed to reload)')
+parser.add_argument('--aux_tau21', action='store_true', default=False,
+                    help='use tau 21 as aux task (for AD)')
 
 
 def to_filelist(args, mode='train'):
