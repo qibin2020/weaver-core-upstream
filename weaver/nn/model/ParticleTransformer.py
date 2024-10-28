@@ -39,21 +39,13 @@ def to_m2(x, eps=1e-8):
     return m2
 
 
-def atan2(y, x):
-    sx = torch.sign(x)
-    sy = torch.sign(y)
-    pi_part = (sy + sx * (sy ** 2 - 1)) * (sx - 1) * (-math.pi / 2)
-    atan_part = torch.arctan(y / (x + (1 - sx ** 2))) * sx ** 2
-    return atan_part + pi_part
-
-
-def to_ptrapphim(x, return_mass=True, eps=1e-8, for_onnx=False):
+def to_ptrapphim(x, return_mass=True, eps=1e-8):
     # x: (N, 4, ...), dim1 : (px, py, pz, E)
     px, py, pz, energy = x.split((1, 1, 1, 1), dim=1)
     pt = torch.sqrt(to_pt2(x, eps=eps))
     # rapidity = 0.5 * torch.log((energy + pz) / (energy - pz))
     rapidity = 0.5 * torch.log(1 + (2 * pz) / (energy - pz).clamp(min=1e-20))
-    phi = (atan2 if for_onnx else torch.atan2)(py, px)
+    phi = torch.atan2(py, px)
     if not return_mass:
         return torch.cat((pt, rapidity, phi), dim=1)
     else:
@@ -98,9 +90,9 @@ def to_cos_sin_angles(xi, xj, normed_inputs=False, eps=1e-8):
     return cos, sin
 
 
-def pairwise_lv_fts_pp(xi, xj, num_outputs=4, eps=1e-8, for_onnx=False):
-    pti, rapi, phii = to_ptrapphim(xi, False, eps=None, for_onnx=for_onnx).split((1, 1, 1), dim=1)
-    ptj, rapj, phij = to_ptrapphim(xj, False, eps=None, for_onnx=for_onnx).split((1, 1, 1), dim=1)
+def pairwise_lv_fts_pp(xi, xj, num_outputs=4, eps=1e-8):
+    pti, rapi, phii = to_ptrapphim(xi, False, eps=None).split((1, 1, 1), dim=1)
+    ptj, rapj, phij = to_ptrapphim(xj, False, eps=None).split((1, 1, 1), dim=1)
 
     delta = delta_r2(rapi, phii, rapj, phij).sqrt()
     lndelta = torch.log(delta.clamp(min=eps))
@@ -108,7 +100,7 @@ def pairwise_lv_fts_pp(xi, xj, num_outputs=4, eps=1e-8, for_onnx=False):
         return lndelta
 
     if num_outputs > 1:
-        ptmin = ((pti <= ptj) * pti + (pti > ptj) * ptj) if for_onnx else torch.minimum(pti, ptj)
+        ptmin = torch.minimum(pti, ptj)
         lnkt = torch.log((ptmin * delta).clamp(min=eps))
         lnz = torch.log((ptmin / (pti + ptj).clamp(min=eps)).clamp(min=eps))
         outputs = [lnkt, lnz, lndelta]
@@ -137,7 +129,7 @@ def pairwise_lv_fts_pp(xi, xj, num_outputs=4, eps=1e-8, for_onnx=False):
     return torch.cat(outputs, dim=1)
 
 
-def pairwise_lv_fts_ee(xi, xj, num_outputs=6, eps=1e-8, for_onnx=False):
+def pairwise_lv_fts_ee(xi, xj, num_outputs=6, eps=1e-8):
     # outputs: [lnm2, cos_angle, sin_angle, lnkt, lnz, lnjade]
     lnm2 = torch.log(to_m2(xi + xj, eps=eps))
     outputs = [lnm2]
@@ -149,7 +141,7 @@ def pairwise_lv_fts_ee(xi, xj, num_outputs=6, eps=1e-8, for_onnx=False):
         outputs += [cos_angle, sin_angle]
 
     if num_outputs > 3:
-        pmin = ((pi <= pj) * pi + (pi > pj) * pj) if for_onnx else torch.minimum(pi, pj)
+        pmin = torch.minimum(pi, pj)
         lnkt = torch.log((pmin * sin_angle).clamp(min=eps))
         lnz = torch.log((pmin / (pi + pj).clamp(min=eps)).clamp(min=eps))
         outputs += [lnkt, lnz]
@@ -177,6 +169,10 @@ def build_sparse_tensor(uu, idx, seq_len):
         i, uu.flatten(),
         size=(batch_size, num_fts, seq_len + 1, seq_len + 1),
         device=uu.device).to_dense()[:, :, :seq_len, :seq_len]
+
+
+def tril_indices(row, col, offset=0, *, dtype=torch.long, device='cpu'):
+    return torch.ones(row, col, dtype=dtype, device=device).tril(offset).nonzero().T
 
 
 class SequenceTrimmer(nn.Module):
@@ -234,6 +230,30 @@ class SequenceTrimmer(nn.Module):
         return x, v, mask, uu
 
 
+class SwiGLUFFN(nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: Optional[int] = None,
+        out_features: Optional[int] = None,
+        drop: float = 0.0,
+        bias: bool = True,
+    ) -> None:
+        super().__init__()
+        hidden_features = hidden_features or in_features
+        out_features = out_features or in_features
+        self.w12 = nn.Linear(in_features, 2 * hidden_features, bias=bias)
+        self.drop = nn.Dropout(drop)
+        self.w3 = nn.Linear(hidden_features, out_features, bias=bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x12 = self.w12(x)
+        x1, x2 = x12.chunk(2, dim=-1)
+        hidden = F.silu(x1) * x2
+        hidden = self.drop(hidden)
+        return self.w3(hidden)
+
+
 class Embed(nn.Module):
     def __init__(self, input_dim, dims, normalize_input=True, activation='gelu'):
         super().__init__()
@@ -262,29 +282,29 @@ class PairEmbed(nn.Module):
     def __init__(
             self, pairwise_lv_dim, pairwise_input_dim, dims,
             pairwise_lv_type='pp',
-            remove_self_pair=False, use_pre_activation_pair=True, mode='sum',
+            remove_self_pair=False, use_pre_activation_pair=True,
             normalize_input=True, activation='gelu', eps=1e-8,
-            for_onnx=False):
+            for_onnx=False, sparse_eval=None):
         super().__init__()
 
         self.pairwise_lv_dim = pairwise_lv_dim
         self.pairwise_input_dim = pairwise_input_dim
         self.remove_self_pair = remove_self_pair
-        self.mode = mode
         self.for_onnx = for_onnx
+        self.sparse_eval = (not for_onnx) if sparse_eval is None else sparse_eval
         self.out_dim = dims[-1]
 
         if pairwise_lv_type == 'pp':
             self.is_symmetric = (pairwise_lv_dim <= 5) and (pairwise_input_dim == 0)
-            self.pairwise_lv_fts = partial(pairwise_lv_fts_pp, num_outputs=pairwise_lv_dim, eps=eps, for_onnx=for_onnx)
+            self.pairwise_lv_fts = partial(pairwise_lv_fts_pp, num_outputs=pairwise_lv_dim, eps=eps)
         elif pairwise_lv_type == 'ee':
             self.is_symmetric = (pairwise_lv_dim <= 6) and (pairwise_input_dim == 0)
-            self.pairwise_lv_fts = partial(pairwise_lv_fts_ee, num_outputs=pairwise_lv_dim, eps=eps, for_onnx=for_onnx)
+            self.pairwise_lv_fts = partial(pairwise_lv_fts_ee, num_outputs=pairwise_lv_dim, eps=eps)
         else:
             raise RuntimeError('Invalid value for `pairwise_lv_type`: ' + pairwise_lv_type)
 
-        if self.mode == 'concat':
-            input_dim = pairwise_lv_dim + pairwise_input_dim
+        if pairwise_lv_dim > 0:
+            input_dim = pairwise_lv_dim
             module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
             for dim in dims:
                 module_list.extend([
@@ -296,38 +316,22 @@ class PairEmbed(nn.Module):
             if use_pre_activation_pair:
                 module_list = module_list[:-1]
             self.embed = nn.Sequential(*module_list)
-        elif self.mode == 'sum':
-            if pairwise_lv_dim > 0:
-                input_dim = pairwise_lv_dim
-                module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
-                for dim in dims:
-                    module_list.extend([
-                        nn.Conv1d(input_dim, dim, 1),
-                        nn.BatchNorm1d(dim),
-                        nn.GELU() if activation == 'gelu' else nn.ReLU(),
-                    ])
-                    input_dim = dim
-                if use_pre_activation_pair:
-                    module_list = module_list[:-1]
-                self.embed = nn.Sequential(*module_list)
 
-            if pairwise_input_dim > 0:
-                input_dim = pairwise_input_dim
-                module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
-                for dim in dims:
-                    module_list.extend([
-                        nn.Conv1d(input_dim, dim, 1),
-                        nn.BatchNorm1d(dim),
-                        nn.GELU() if activation == 'gelu' else nn.ReLU(),
-                    ])
-                    input_dim = dim
-                if use_pre_activation_pair:
-                    module_list = module_list[:-1]
-                self.fts_embed = nn.Sequential(*module_list)
-        else:
-            raise RuntimeError('`mode` can only be `sum` or `concat`')
+        if pairwise_input_dim > 0:
+            input_dim = pairwise_input_dim
+            module_list = [nn.BatchNorm1d(input_dim)] if normalize_input else []
+            for dim in dims:
+                module_list.extend([
+                    nn.Conv1d(input_dim, dim, 1),
+                    nn.BatchNorm1d(dim),
+                    nn.GELU() if activation == 'gelu' else nn.ReLU(),
+                ])
+                input_dim = dim
+            if use_pre_activation_pair:
+                module_list = module_list[:-1]
+            self.fts_embed = nn.Sequential(*module_list)
 
-    def forward(self, x, uu=None):
+    def _forward_dense(self, x, uu=None, mask=None):
         # x: (batch, v_dim, seq_len)
         # uu: (batch, v_dim, seq_len, seq_len)
         assert (x is not None or uu is not None)
@@ -336,9 +340,11 @@ class PairEmbed(nn.Module):
                 batch_size, _, seq_len = x.size()
             else:
                 batch_size, _, seq_len, _ = uu.size()
-            if self.is_symmetric and not self.for_onnx:
-                i, j = torch.tril_indices(seq_len, seq_len, offset=-1 if self.remove_self_pair else 0,
-                                          device=(x if x is not None else uu).device)
+            if self.is_symmetric:
+                tril_indices_fn = tril_indices if self.for_onnx else torch.tril_indices
+                i, j = tril_indices_fn(
+                    seq_len, seq_len, offset=-1 if self.remove_self_pair else 0,
+                    device=(x if x is not None else uu).device)
                 if x is not None:
                     x = x.unsqueeze(-1).repeat(1, 1, 1, seq_len)
                     xi = x[:, :, i, j]  # (batch, dim, seq_len*(seq_len+1)/2)
@@ -356,31 +362,70 @@ class PairEmbed(nn.Module):
                     x = x.view(-1, self.pairwise_lv_dim, seq_len * seq_len)
                 if uu is not None:
                     uu = uu.view(-1, self.pairwise_input_dim, seq_len * seq_len)
-            if self.mode == 'concat':
-                if x is None:
-                    pair_fts = uu
-                elif uu is None:
-                    pair_fts = x
-                else:
-                    pair_fts = torch.cat((x, uu), dim=1)
 
-        if self.mode == 'concat':
-            elements = self.embed(pair_fts)  # (batch, embed_dim, num_elements)
-        elif self.mode == 'sum':
-            if x is None:
-                elements = self.fts_embed(uu)
-            elif uu is None:
-                elements = self.embed(x)
-            else:
-                elements = self.embed(x) + self.fts_embed(uu)
+        # with grad
+        elements = 0
+        if x is not None:
+            elements = elements + self.embed(x)
+        if uu is not None:
+            elements = elements + self.fts_embed(uu)
 
-        if self.is_symmetric and not self.for_onnx:
+        if self.is_symmetric:
             y = torch.zeros(batch_size, self.out_dim, seq_len, seq_len, dtype=elements.dtype, device=elements.device)
             y[:, :, i, j] = elements
             y[:, :, j, i] = elements
         else:
             y = elements.view(-1, self.out_dim, seq_len, seq_len)
         return y
+
+    def _forward_sparse(self, x, uu=None, mask=None):
+        # x: (batch, v_dim, seq_len)
+        # uu: (batch, v_dim, seq_len, seq_len)
+        assert (x is not None or uu is not None)
+        with torch.no_grad():
+            if x is not None:
+                batch_size, _, seq_len = x.size()
+            else:
+                batch_size, _, seq_len, _ = uu.size()
+
+            i0, i1, i2, i3 = (Ellipsis,) * 4
+            if mask is not None:
+                mask = mask.unsqueeze(-1) * mask.unsqueeze(-2)  # (batch_size, 1, seq_len, seq_len)
+                if self.is_symmetric:
+                    offset = -1 if self.remove_self_pair else 0
+                    i0, _, i2, i3 = mask.float().tril(offset).nonzero(as_tuple=True)
+                else:
+                    i0, _, i2, i3 = mask.nonzero(as_tuple=True)
+
+            if x is not None:
+                x = self.pairwise_lv_fts(x.unsqueeze(-1), x.unsqueeze(-2))
+                x = x.permute(0, 2, 3, 1)[i0, i2, i3, :]  # (num_elements, pairwise_lv_dim)
+                x = x.T.unsqueeze(0).contiguous()  # (1, pairwise_lv_dim, num_elements)
+            if uu is not None:
+                uu = uu.permute(0, 2, 3, 1)[i0, i2, i3, :]  # (num_elements, pairwise_input_dim)
+                uu = uu.T.unsqueeze(0).contiguous()  # (1, pairwise_input_dim, num_elements)
+
+        # with grad
+        elements = 0
+        if x is not None:
+            elements = elements + self.embed(x)
+        if uu is not None:
+            elements = elements + self.fts_embed(uu)
+        elements = elements.squeeze(0).T  # (num_elements, out_dim)
+
+        y = torch.zeros(batch_size, seq_len, seq_len, self.out_dim, dtype=elements.dtype, device=elements.device)
+        y[i0, i2, i3, :] = elements
+        if self.is_symmetric:
+            y[i0, i3, i2, :] = elements
+        y = y.permute(0, 3, 1, 2).contiguous()
+
+        return y
+
+    def forward(self, x, uu=None, mask=None):
+        if self.sparse_eval:
+            return self._forward_sparse(x, uu=uu, mask=mask)
+        else:
+            return self._forward_dense(x, uu=uu, mask=mask)
 
 
 def _canonical_mask(
@@ -404,6 +449,14 @@ def _canonical_mask(
                 .masked_fill_(mask, float("-inf"))
             )
     return mask
+
+
+def _none_or_dtype(input: Optional[torch.Tensor]):
+    if input is None:
+        return None
+    elif isinstance(input, torch.Tensor):
+        return input.dtype
+    raise RuntimeError("input to _none_or_dtype() must be None or torch.Tensor")
 
 
 class Attention(torch.nn.Module):
@@ -452,7 +505,7 @@ class Attention(torch.nn.Module):
         key_padding_mask = _canonical_mask(
             mask=key_padding_mask,
             mask_name="key_padding_mask",
-            other_type=F._none_or_dtype(attn_mask),
+            other_type=_none_or_dtype(attn_mask),
             other_name="attn_mask",
             target_type=query.dtype
         )
@@ -476,7 +529,7 @@ class Attention(torch.nn.Module):
                 attn_mask = key_padding_mask
             else:
                 assert attn_mask.shape == (bsz, self.num_heads, tgt_len, src_len), \
-                    f"expecting key_padding_mask shape of {(bsz, self.num_heads, tgt_len, src_len)}, but got {key_padding_mask.shape}"
+                    f"expecting attn_mask shape of {(bsz, self.num_heads, tgt_len, src_len)}, but got {attn_mask.shape}"
                 attn_mask = attn_mask + key_padding_mask
 
         # (bsz, seq_len, num_heads*head_dim)
@@ -681,6 +734,7 @@ class ParticleTransformer(nn.Module):
                  fc_params=(),
                  activation='gelu',
                  # misc
+                 version=1,
                  weight_init='moco',
                  fix_init=True,
                  trim=True,
@@ -705,6 +759,11 @@ class ParticleTransformer(nn.Module):
                            drop_path_rate=0.,
                            scale_attn_mask=False,
                            scale_fc=True, scale_attn=True, scale_heads=True, scale_resids=True)
+        if version > 1:
+            default_cfg.update(
+                activation='swiglu',
+                scale_fc=False, scale_attn=False, scale_heads=False, scale_resids=False,
+            )
 
         cfg_block = copy.deepcopy(default_cfg)
         if block_params is not None:
@@ -735,8 +794,19 @@ class ParticleTransformer(nn.Module):
         if fc_params is not None:
             fcs = []
             in_dim = embed_dim
-            for out_dim, drop_rate in fc_params:
-                fcs.append(nn.Sequential(nn.Linear(in_dim, out_dim), nn.ReLU(), nn.Dropout(drop_rate)))
+            for param in fc_params:
+                try:
+                    out_dim, drop_rate, act = param
+                except ValueError:
+                    (out_dim, drop_rate), act = param, 'relu'
+                if act == 'swiglu':
+                    layer = nn.Sequential(SwiGLUFFN(in_dim, out_dim * 4, out_dim, drop=drop_rate),
+                                          nn.LayerNorm(out_dim))
+                else:
+                    layer = nn.Sequential(nn.Linear(in_dim, out_dim),
+                                          nn.GELU() if act == 'gelu' else nn.ReLU(),
+                                          nn.Dropout(drop_rate))
+                fcs.append(layer)
                 in_dim = out_dim
             fcs.append(nn.Linear(in_dim, num_classes))
             self.fc = nn.Sequential(*fcs)
@@ -788,7 +858,7 @@ class ParticleTransformer(nn.Module):
             x = self.embed(x).masked_fill(~mask.transpose(1, 2), 0)  # (batch_size, seq_len, num_fts)
             attn_mask = None
             if (v is not None or uu is not None) and self.pair_embed is not None:
-                attn_mask = self.pair_embed(v, uu)  # (batch_size, num_heads, seq_len, seq_len)
+                attn_mask = self.pair_embed(v, uu=uu, mask=mask)  # (batch_size, num_heads, seq_len, seq_len)
 
             # transform
             for block in self.blocks:
@@ -834,6 +904,7 @@ class ParticleTransformer(nn.Module):
         with torch.autocast('cuda', enabled=self.use_amp):
             # === for segmentation ===
             if self.for_segmentation:
+                x = self.norm(x)
                 if self.fc is not None:
                     x = self.fc(x)
                 # x: (P, N, C) -> output: (N, C, P)
@@ -877,8 +948,12 @@ class ParticleTransformerTagger(nn.Module):
                  fc_params=(),
                  activation='gelu',
                  # misc
+                 version=1,
+                 weight_init='moco',
+                 fix_init=True,
                  trim=True,
                  for_inference=False,
+                 for_segmentation=False,
                  use_amp=False,
                  **kwargs) -> None:
         super().__init__(**kwargs)
@@ -909,8 +984,12 @@ class ParticleTransformerTagger(nn.Module):
                                         fc_params=fc_params,
                                         activation=activation,
                                         # misc
+                                        version=version,
+                                        weight_init=weight_init,
+                                        fix_init=fix_init,
                                         trim=False,
                                         for_inference=for_inference,
+                                        for_segmentation=for_segmentation,
                                         use_amp=use_amp)
 
     @torch.jit.ignore
@@ -958,8 +1037,12 @@ class ParticleTransformerTaggerWithExtraPairFeatures(nn.Module):
                  fc_params=(),
                  activation='gelu',
                  # misc
+                 version=1,
+                 weight_init='moco',
+                 fix_init=True,
                  trim=True,
                  for_inference=False,
+                 for_segmentation=False,
                  use_amp=False,
                  **kwargs) -> None:
         super().__init__(**kwargs)
@@ -991,8 +1074,12 @@ class ParticleTransformerTaggerWithExtraPairFeatures(nn.Module):
                                         fc_params=fc_params,
                                         activation=activation,
                                         # misc
+                                        version=version,
+                                        weight_init=weight_init,
+                                        fix_init=fix_init,
                                         trim=False,
                                         for_inference=for_inference,
+                                        for_segmentation=for_segmentation,
                                         use_amp=use_amp)
 
     @torch.jit.ignore

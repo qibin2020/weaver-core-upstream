@@ -76,13 +76,28 @@ def _read_parquet(filepath, branches, load_range=None):
     return outputs
 
 
-def _read_files(filelist, branches, load_range=None, show_progressbar=False, file_magic=None, **kwargs):
+def _read_files(filelist, branches, load_ranges=None, show_progressbar=False, file_magic=None, **kwargs):
     import os
     branches = list(branches)
     table = []
     if show_progressbar:
         filelist = tqdm.tqdm(filelist)
-    for filepath in filelist:
+
+    # check `load_ranges`:
+    #  - None: load all entries for all files
+    #  - (start, end): the same range for all files
+    #  - a list/tuple of (start, end): different range for each file
+    if load_ranges is None:
+        load_ranges = (None,) * len(filelist)
+    else:
+        if any(isinstance(x, (list, tuple)) for x in load_ranges):
+            assert len(load_ranges) == len(filelist)
+        else:
+            load_ranges = (load_ranges,) * len(filelist)
+    assert all(r is None or (len(r) == 2 and 0 <= r[0] < r[1] <= 1) for r in load_ranges)
+    for filepath, load_range in zip(filelist, load_ranges):
+        if load_range is not None and load_range[0] >= load_range[1]:
+            continue
         ext = os.path.splitext(filepath)[1]
         if ext not in ('.h5', '.root', '.awkd', '.parquet'):
             raise RuntimeError('File %s of type `%s` is not supported!' % (filepath, ext))
@@ -116,7 +131,7 @@ def _read_files(filelist, branches, load_range=None, show_progressbar=False, fil
             table.append(a)
     table = _concat(table)  # ak.Array
     if len(table) == 0:
-        raise RuntimeError(f'Zero entries loaded when reading files {filelist} with `load_range`={load_range}.')
+        raise RuntimeError(f'Zero entries loaded when reading files {filelist} with `load_ranges`={load_ranges}.')
     return table
 
 
